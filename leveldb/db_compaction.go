@@ -455,6 +455,10 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 		ukey, seq, kt, kerr := parseInternalKey(ikey)
 
 		if kerr == nil {
+			if len(lastUkey) > 0 && len(ukey) > 0 && lastUkey[0] != ukey[0] {
+				break
+			}
+
 			shouldStop := !resumed && b.c.shouldStopBefore(ikey)
 
 			if !hasLastUkey || b.s.icmp.uCompare(lastUkey, ukey) != 0 {
