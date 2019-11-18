@@ -459,6 +459,11 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 
 		if kerr == nil {
 			shouldStop := !resumed && b.c.shouldStopBefore(ikey)
+			if hasLastUkey {
+				if len(lastUkey) > 1 && len(ukey) > 1 && (lastUkey[0] != ukey[0] || lastUkey[1] != ukey[1]) {
+					shouldStop = true
+				}
+			}
 
 			if !hasLastUkey || b.s.icmp.uCompare(lastUkey, ukey) != 0 {
 				// First occurrence of this user key.
