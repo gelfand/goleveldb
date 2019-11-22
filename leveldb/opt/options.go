@@ -84,6 +84,10 @@ func (c Compression) String() string {
 	return "invalid"
 }
 
+// KeyAffinityFunc is the function type to determine key affinity.
+// Negative affinity indicates the key will be frequently modified.
+type KeyAffinityFunc func(key []byte) int
+
 const (
 	DefaultCompression Compression = iota
 	NoCompression
@@ -373,6 +377,17 @@ type Options struct {
 	//
 	// The default value is 8.
 	WriteL0SlowdownTrigger int
+
+	// KeyAffinity provides the strategy to define key affinity.
+	// All keys in one table have the same affinity value.
+	//
+	// It must be consistency across db's runtime life-cycle, and compliant with Comparer option.
+	//
+	// Assign negative affinity for frequently modified keys to achieve best
+	// compaction performance.
+	//
+	// The default value is nil.
+	KeyAffinity KeyAffinityFunc
 }
 
 func (o *Options) GetAltFilters() []filter.Filter {
@@ -639,6 +654,13 @@ func (o *Options) GetWriteL0SlowdownTrigger() int {
 		return DefaultWriteL0SlowdownTrigger
 	}
 	return o.WriteL0SlowdownTrigger
+}
+
+func (o *Options) GetKeyAffinity(key []byte) int {
+	if o.KeyAffinity != nil {
+		return o.KeyAffinity(key)
+	}
+	return 0
 }
 
 // ReadOptions holds the optional parameters for 'read operation'. The
