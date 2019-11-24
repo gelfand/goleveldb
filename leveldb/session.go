@@ -65,6 +65,8 @@ type session struct {
 
 	// Testing fields
 	fileRefCh chan chan map[int64]int // channel used to pass current reference stat
+
+	maxVolatileTableLevel int
 }
 
 // Creates new initialized session instance.

@@ -63,26 +63,54 @@ func (s *session) pickCompaction() *compaction {
 		sourceLevel = v.cLevel
 		cptr := s.getCompPtr(sourceLevel)
 		tables := v.levels[sourceLevel]
-		if cptr != nil {
-			if sourceLevel == 0 {
-				for _, t := range tables {
-					if s.icmp.Compare(t.imax, cptr) > 0 {
-						t0 = append(t0, t)
-						break
-					}
+
+		if sourceLevel == 0 {
+			for _, t := range tables {
+				if cptr == nil || s.icmp.Compare(t.imax, cptr) > 0 {
+					t0 = append(t0, t)
+					break
 				}
-			} else {
-				n := len(tables)
-				if i := sort.Search(n, func(i int) bool {
+			}
+			if len(t0) == 0 {
+				t0 = append(t0, tables[0])
+			}
+		} else {
+			n := len(tables)
+			p := 0
+			if cptr != nil {
+				// search p, the position of first table whose imax > cptr
+				p = sort.Search(n, func(i int) bool {
 					return s.icmp.Compare(tables[i].imax, cptr) > 0
-				}); i < n {
-					t0 = append(t0, tables[i])
+				})
+				if p == n {
+					p = 0
+				}
+			}
+
+			// traverse all tables from position p, take special care of volatile tables.
+			// a volatile table is expected to stay in lower level unless there was one or
+			// more volatile table pushed into higher level.
+			for i := 0; i < n; i++ {
+				t := tables[(p+i)%n]
+
+				// for volatile tables, see if we should skip it and let it stay in source level.
+				if sourceLevel < s.maxVolatileTableLevel || !s.o.IsKeyVolatile(t.imax.ukey()) {
+					t0 = append(t0, t)
+					break
+				}
+			}
+
+			if len(t0) == 0 {
+				// all tables are volatile, pick the first one,
+				t0 = append(t0, tables[p])
+
+				// and then update maxVolatileTableLevel.
+				if targetLevel := sourceLevel + 1; targetLevel > s.maxVolatileTableLevel {
+					s.maxVolatileTableLevel = targetLevel
 				}
 			}
 		}
-		if len(t0) == 0 {
-			t0 = append(t0, tables[0])
-		}
+
 		if sourceLevel == 0 {
 			typ = level0Compaction
 		} else {
