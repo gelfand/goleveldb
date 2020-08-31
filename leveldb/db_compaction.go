@@ -370,12 +370,25 @@ type tableCompactionBuilder struct {
 	strict    bool
 	tableSize int
 
-	tw *tWriter
+	// tw *tWriter
+
+	tBytes int
+	kvC    chan *kv
+	twWg   sync.WaitGroup
+	twC    chan *twResult
+
+	pool sync.Pool
+}
+
+type twResult struct {
+	err error
+	tw  *tWriter
+	t   *tFile
 }
 
 func (b *tableCompactionBuilder) appendKV(key, value []byte) error {
 	// Create new table if not already.
-	if b.tw == nil {
+	if b.kvC == nil {
 		// Check for pause event.
 		if b.db != nil {
 			select {
@@ -387,42 +400,141 @@ func (b *tableCompactionBuilder) appendKV(key, value []byte) error {
 			}
 		}
 
-		// Create new table.
-		var err error
-		b.tw, err = b.s.tops.create()
+		tw, err := b.s.tops.create()
 		if err != nil {
 			return err
 		}
+		kvC := make(chan *kv, 65536)
+		b.kvC = kvC
+		b.twWg.Add(1)
+		go func() {
+			defer b.twWg.Add(-1)
+			for kv := range kvC {
+				k := kv.buf[:kv.klen]
+				v := kv.buf[kv.klen:]
+				if err := tw.append(k, v); err != nil {
+					b.twC <- &twResult{
+						tw:  tw,
+						err: err,
+					}
+					return
+				}
+				b.pool.Put(kv)
+			}
+			t, err := tw.finish()
+			if err != nil {
+				b.twC <- &twResult{
+					tw:  tw,
+					err: err,
+				}
+				return
+			}
+			b.twC <- &twResult{
+				tw: tw,
+				t:  t,
+			}
+		}()
+	}
+	b.tBytes += len(key) + len(value)
+
+	var ent *kv
+	if i := b.pool.Get(); i != nil {
+		ent = i.(*kv)
+		ent.buf = ent.buf[:0]
+		ent.klen = 0
+	} else {
+		ent = &kv{}
 	}
 
-	// Write key/value into table.
-	return b.tw.append(key, value)
+	ent.klen = len(key)
+	ent.buf = append(ent.buf, key...)
+	ent.buf = append(ent.buf, value...)
+
+	b.kvC <- ent
+
+	return nil
+	// // Write key/value into table.
+	// return b.tw.append(key, value)
+	// // Create new table if not already.
+	// if b.tw == nil {
+	// 	// Check for pause event.
+	// 	if b.db != nil {
+	// 		select {
+	// 		case ch := <-b.db.tcompPauseC:
+	// 			b.db.pauseCompaction(ch)
+	// 		case <-b.db.closeC:
+	// 			b.db.compactionExitTransact()
+	// 		default:
+	// 		}
+	// 	}
+
+	// 	// Create new table.
+	// 	var err error
+	// 	b.tw, err = b.s.tops.create()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+
+	// // Write key/value into table.
+	// return b.tw.append(key, value)
 }
 
 func (b *tableCompactionBuilder) needFlush() bool {
-	return b.tw.tw.BytesLen() >= b.tableSize
+	return b.tBytes >= b.tableSize
 }
 
 func (b *tableCompactionBuilder) flush() error {
-	t, err := b.tw.finish()
-	if err != nil {
-		return err
-	}
-	b.rec.addTableFile(b.c.sourceLevel+1, t)
-	b.stat1.write += t.size
-	b.s.logf("table@build created L%d@%d N·%d S·%s %q:%q", b.c.sourceLevel+1, t.fd.Num, b.tw.tw.EntriesLen(), shortenb(int(t.size)), t.imin, t.imax)
-	b.tw = nil
+	close(b.kvC)
+	b.kvC = nil
+	b.tBytes = 0
 	return nil
+	// t, err := b.tw.finish()
+	// if err != nil {
+	// 	return err
+	// }
+	// b.rec.addTableFile(b.c.sourceLevel+1, t)
+	// b.stat1.write += t.size
+	// b.s.logf("table@build created L%d@%d N·%d S·%s %q:%q", b.c.sourceLevel+1, t.fd.Num, b.tw.tw.EntriesLen(), shortenb(int(t.size)), t.imin, t.imax)
+	// b.tw = nil
+	// return nil
+}
+
+func (b *tableCompactionBuilder) handleTw(r *twResult) error {
+	if r.err != nil {
+		if r.tw != nil {
+			r.tw.drop()
+		}
+	} else {
+		b.rec.addTableFile(b.c.sourceLevel+1, r.t)
+		b.stat1.write += r.t.size
+		b.s.logf("table@build created L%d@%d N·%d S·%s %q:%q", b.c.sourceLevel+1, r.t.fd.Num, r.tw.tw.EntriesLen(), shortenb(int(r.t.size)), r.t.imin, r.t.imax)
+	}
+	return r.err
 }
 
 func (b *tableCompactionBuilder) cleanup() {
-	if b.tw != nil {
-		b.tw.drop()
-		b.tw = nil
+	go func() {
+		b.twWg.Wait()
+		close(b.twC)
+	}()
+
+	for r := range b.twC {
+		b.handleTw(r)
 	}
+	// if b.tw != nil {
+	// 	b.tw.drop()
+	// 	b.tw = nil
+	// }
+}
+
+type kv struct {
+	buf  []byte
+	klen int
 }
 
 func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
+	b.twC = make(chan *twResult, 1)
 	snapResumed := b.snapIter > 0
 	hasLastUkey := b.snapHasLastUkey // The key might has zero length, so this is necessary.
 	lastUkey := append([]byte{}, b.snapLastUkey...)
@@ -439,6 +551,7 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 
 	iter := b.c.newIterator()
 	defer iter.Release()
+
 	for i := 0; iter.Next(); i++ {
 		// Incr transact counter.
 		cnt.incr()
@@ -464,7 +577,7 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 				// First occurrence of this user key.
 
 				// Only rotate tables if ukey doesn't hop across.
-				if b.tw != nil && (shouldStop || b.needFlush()) {
+				if b.kvC != nil && (shouldStop || b.needFlush()) {
 					if err := b.flush(); err != nil {
 						return err
 					}
@@ -517,6 +630,14 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 		if err := b.appendKV(ikey, iter.Value()); err != nil {
 			return err
 		}
+
+		select {
+		case r := <-b.twC:
+			if err := b.handleTw(r); err != nil {
+				return err
+			}
+		default:
+		}
 	}
 
 	if err := iter.Error(); err != nil {
@@ -524,9 +645,12 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) error {
 	}
 
 	// Finish last table.
-	if b.tw != nil && !b.tw.empty() {
-		return b.flush()
+	if b.kvC != nil {
+		b.flush()
 	}
+	// if b.tw != nil && !b.tw.empty() {
+	// 	return b.flush()
+	// }
 	return nil
 }
 
