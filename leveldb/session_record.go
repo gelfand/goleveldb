@@ -32,6 +32,8 @@ const (
 	recAddTable    = 7
 	// 8 was used for large value refs
 	recPrevJournalNum = 9
+
+	recOCompPtr = 16
 )
 
 type cpRecord struct {
@@ -60,6 +62,7 @@ type sessionRecord struct {
 	nextFileNum    int64
 	seqNum         uint64
 	compPtrs       []cpRecord
+	oCompPtrs      []cpRecord
 	addedTables    []atRecord
 	deletedTables  []dtRecord
 
@@ -96,14 +99,24 @@ func (p *sessionRecord) setSeqNum(num uint64) {
 	p.seqNum = num
 }
 
-func (p *sessionRecord) addCompPtr(level int, ikey internalKey) {
-	p.hasRec |= 1 << recCompPtr
-	p.compPtrs = append(p.compPtrs, cpRecord{level, ikey})
+func (p *sessionRecord) addCompPtr(level int, ikey internalKey, overflowed bool) {
+	if overflowed {
+		p.hasRec |= 1 << recOCompPtr
+		p.oCompPtrs = append(p.oCompPtrs, cpRecord{level, ikey})
+	} else {
+		p.hasRec |= 1 << recCompPtr
+		p.compPtrs = append(p.compPtrs, cpRecord{level, ikey})
+	}
 }
 
-func (p *sessionRecord) resetCompPtrs() {
-	p.hasRec &= ^(1 << recCompPtr)
-	p.compPtrs = p.compPtrs[:0]
+func (p *sessionRecord) resetCompPtrs(overflowed bool) {
+	if overflowed {
+		p.hasRec &= ^(1 << recOCompPtr)
+		p.oCompPtrs = p.oCompPtrs[:0]
+	} else {
+		p.hasRec &= ^(1 << recCompPtr)
+		p.compPtrs = p.compPtrs[:0]
+	}
 }
 
 func (p *sessionRecord) addTable(level int, num, size int64, imin, imax internalKey) {
@@ -176,6 +189,11 @@ func (p *sessionRecord) encode(w io.Writer) error {
 	}
 	for _, r := range p.compPtrs {
 		p.putUvarint(w, recCompPtr)
+		p.putUvarint(w, uint64(r.level))
+		p.putBytes(w, r.ikey)
+	}
+	for _, r := range p.oCompPtrs {
+		p.putUvarint(w, recOCompPtr)
 		p.putUvarint(w, uint64(r.level))
 		p.putBytes(w, r.ikey)
 	}
@@ -299,7 +317,13 @@ func (p *sessionRecord) decode(r io.Reader) error {
 			level := p.readLevel("comp-ptr.level", br)
 			ikey := p.readBytes("comp-ptr.ikey", br)
 			if p.err == nil {
-				p.addCompPtr(level, internalKey(ikey))
+				p.addCompPtr(level, internalKey(ikey), false)
+			}
+		case recOCompPtr:
+			level := p.readLevel("ocomp-ptr.level", br)
+			ikey := p.readBytes("ocomp-ptr.ikey", br)
+			if p.err == nil {
+				p.addCompPtr(level, internalKey(ikey), true)
 			}
 		case recAddTable:
 			level := p.readLevel("add-table.level", br)
