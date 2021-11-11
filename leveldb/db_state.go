@@ -117,14 +117,26 @@ func (db *DB) mpoolDrain() {
 	}
 }
 
+type bufw struct {
+	storage.Writer
+}
+
+func (x *bufw) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
 // Create new memdb and froze the old one; need external synchronization.
 // newMem only called synchronously by the writer.
 func (db *DB) newMem(n int) (mem *memDB, err error) {
 	fd := storage.FileDesc{Type: storage.TypeJournal, Num: db.s.allocFileNum()}
 	w, err := db.s.stor.Create(fd)
+
 	if err != nil {
 		db.s.reuseFileNum(fd.Num)
 		return
+	}
+	w = &bufw{
+		Writer: w,
 	}
 
 	db.memMu.Lock()

@@ -1140,6 +1140,9 @@ func (db *DB) SizeOf(ranges []util.Range) (Sizes, error) {
 // It is valid to call Close multiple times. Other methods should not be
 // called after the DB has been closed.
 func (db *DB) Close() error {
+	if _, err := db.rotateMem(0, true); err != nil {
+		return err
+	}
 	if !db.setClosed() {
 		return ErrClosed
 	}
