@@ -7,7 +7,6 @@
 package leveldb
 
 import (
-	"bufio"
 	"errors"
 	"sync/atomic"
 	"time"
@@ -119,25 +118,11 @@ func (db *DB) mpoolDrain() {
 }
 
 type bufw struct {
-	w  storage.Writer
-	bw *bufio.Writer
+	storage.Writer
 }
 
 func (x *bufw) Write(p []byte) (n int, err error) {
-	return x.bw.Write(p)
-}
-func (x *bufw) Close() error {
-	if err := x.bw.Flush(); err != nil {
-		return err
-	}
-	return x.w.Close()
-}
-
-func (x *bufw) Sync() error {
-	if err := x.bw.Flush(); err != nil {
-		return err
-	}
-	return x.w.Sync()
+	return len(p), nil
 }
 
 // Create new memdb and froze the old one; need external synchronization.
@@ -151,8 +136,7 @@ func (db *DB) newMem(n int) (mem *memDB, err error) {
 		return
 	}
 	w = &bufw{
-		w:  w,
-		bw: bufio.NewWriter(w),
+		Writer: w,
 	}
 
 	db.memMu.Lock()
