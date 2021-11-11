@@ -1140,6 +1140,7 @@ func (db *DB) SizeOf(ranges []util.Range) (Sizes, error) {
 // It is valid to call Close multiple times. Other methods should not be
 // called after the DB has been closed.
 func (db *DB) Close() error {
+
 	if !db.setClosed() {
 		return ErrClosed
 	}
@@ -1149,6 +1150,10 @@ func (db *DB) Close() error {
 
 	// Clear the finalizer.
 	runtime.SetFinalizer(db, nil)
+
+	if _, err := db.rotateMem(0, true); err != nil {
+		return err
+	}
 
 	// Get compaction error.
 	var err error
