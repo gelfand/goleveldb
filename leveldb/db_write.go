@@ -228,9 +228,11 @@ func (db *DB) writeLocked(batch, ourBatch *Batch, merge, sync bool) error {
 	seq := db.seq + 1
 
 	// Write journal.
-	if err := db.writeJournal(batches, seq, sync); err != nil {
-		db.unlockWrite(overflow, merged, err)
-		return err
+	if !db.s.o.GetDisableJournal() {
+		if err := db.writeJournal(batches, seq, sync); err != nil {
+			db.unlockWrite(overflow, merged, err)
+			return err
+		}
 	}
 
 	// Put batches.
