@@ -4,6 +4,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd
 // +build darwin dragonfly freebsd linux netbsd openbsd
 
 package storage
@@ -79,6 +80,7 @@ func isErrInvalid(err error) bool {
 }
 
 func syncDir(name string) error {
+	return nil
 	// As per fsync manpage, Linux seems to expect fsync on directory, however
 	// some system don't support this, so we will ignore syscall.EINVAL.
 	//
