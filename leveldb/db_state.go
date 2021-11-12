@@ -120,11 +120,17 @@ func (db *DB) mpoolDrain() {
 // Create new memdb and froze the old one; need external synchronization.
 // newMem only called synchronously by the writer.
 func (db *DB) newMem(n int) (mem *memDB, err error) {
-	fd := storage.FileDesc{Type: storage.TypeJournal, Num: db.s.allocFileNum()}
-	w, err := db.s.stor.Create(fd)
-	if err != nil {
-		db.s.reuseFileNum(fd.Num)
-		return
+	var (
+		fd storage.FileDesc
+		w  storage.Writer
+	)
+	if !db.s.o.GetDisableJournal() {
+		fd = storage.FileDesc{Type: storage.TypeJournal, Num: db.s.allocFileNum()}
+		w, err = db.s.stor.Create(fd)
+		if err != nil {
+			db.s.reuseFileNum(fd.Num)
+			return
+		}
 	}
 
 	db.memMu.Lock()
@@ -134,15 +140,17 @@ func (db *DB) newMem(n int) (mem *memDB, err error) {
 		return nil, errHasFrozenMem
 	}
 
-	if db.journal == nil {
-		db.journal = journal.NewWriter(w)
-	} else {
-		db.journal.Reset(w)
-		db.journalWriter.Close()
-		db.frozenJournalFd = db.journalFd
+	if !db.s.o.GetDisableJournal() {
+		if db.journal == nil {
+			db.journal = journal.NewWriter(w)
+		} else {
+			db.journal.Reset(w)
+			db.journalWriter.Close()
+			db.frozenJournalFd = db.journalFd
+		}
+		db.journalWriter = w
+		db.journalFd = fd
 	}
-	db.journalWriter = w
-	db.journalFd = fd
 	db.frozenMem = db.mem
 	mem = db.mpoolGet(n)
 	mem.incref() // for self

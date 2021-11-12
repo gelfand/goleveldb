@@ -1133,6 +1133,35 @@ func (db *DB) SizeOf(ranges []util.Range) (Sizes, error) {
 	return sizes, nil
 }
 
+// FlushMem flushes current memdb.
+// It only works when DisableJournal set to true.
+func (db *DB) FlushMem() error {
+	if !db.s.o.GetDisableJournal() {
+		return errors.New("FlushMem is not allowed when journal enabled")
+	}
+	if err := db.ok(); err != nil {
+		return err
+	}
+
+	// Get compaction error and acquire write lock.
+	select {
+	case db.writeLockC <- struct{}{}:
+	case err := <-db.compPerErrC:
+		return err
+	case <-db.closeC:
+		return ErrClosed
+	}
+	defer func() { <-db.writeLockC }()
+
+	// Flush current memdb.
+	if db.mem != nil && db.mem.Len() != 0 {
+		if _, err := db.rotateMem(0, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Close closes the DB. This will also releases any outstanding snapshot,
 // abort any in-flight compaction and discard open transaction.
 //
