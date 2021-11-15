@@ -382,6 +382,11 @@ type Options struct {
 	//
 	// The default value is 11(as well as 2KB)
 	FilterBaseLg int
+
+	// DisableJournal allows disabling journal (WAL).
+	//
+	// The default value is false.
+	DisableJournal bool
 }
 
 func (o *Options) GetAltFilters() []filter.Filter {
@@ -657,6 +662,13 @@ func (o *Options) GetFilterBaseLg() int {
 		return DefaultFilterBaseLg
 	}
 	return o.FilterBaseLg
+}
+
+func (o *Options) GetDisableJournal() bool {
+	if o == nil {
+		return false
+	}
+	return o.DisableJournal
 }
 
 // ReadOptions holds the optional parameters for 'read operation'. The
