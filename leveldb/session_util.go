@@ -337,21 +337,37 @@ func (s *session) reuseFileNum(num int64) {
 }
 
 // Set compaction ptr at given level; need external synchronization.
-func (s *session) setCompPtr(level int, ik internalKey) {
-	if level >= len(s.stCompPtrs) {
-		newCompPtrs := make([]internalKey, level+1)
-		copy(newCompPtrs, s.stCompPtrs)
-		s.stCompPtrs = newCompPtrs
+func (s *session) setCompPtr(level int, ik internalKey, overflowed bool) {
+	if overflowed {
+		if level >= len(s.stOCompPtrs) {
+			newCompPtrs := make([]internalKey, level+1)
+			copy(newCompPtrs, s.stOCompPtrs)
+			s.stOCompPtrs = newCompPtrs
+		}
+		s.stOCompPtrs[level] = append(internalKey{}, ik...)
+	} else {
+		if level >= len(s.stCompPtrs) {
+			newCompPtrs := make([]internalKey, level+1)
+			copy(newCompPtrs, s.stCompPtrs)
+			s.stCompPtrs = newCompPtrs
+		}
+		s.stCompPtrs[level] = append(internalKey{}, ik...)
 	}
-	s.stCompPtrs[level] = append(internalKey{}, ik...)
 }
 
 // Get compaction ptr at given level; need external synchronization.
-func (s *session) getCompPtr(level int) internalKey {
-	if level >= len(s.stCompPtrs) {
-		return nil
+func (s *session) getCompPtr(level int, overflowed bool) internalKey {
+	if overflowed {
+		if level >= len(s.stOCompPtrs) {
+			return nil
+		}
+		return s.stOCompPtrs[level]
+	} else {
+		if level >= len(s.stCompPtrs) {
+			return nil
+		}
+		return s.stCompPtrs[level]
 	}
-	return s.stCompPtrs[level]
 }
 
 // Manifest related utils.
@@ -372,7 +388,12 @@ func (s *session) fillRecord(r *sessionRecord, snapshot bool) {
 
 		for level, ik := range s.stCompPtrs {
 			if ik != nil {
-				r.addCompPtr(level, ik)
+				r.addCompPtr(level, ik, false)
+			}
+		}
+		for level, ik := range s.stOCompPtrs {
+			if ik != nil {
+				r.addCompPtr(level, ik, true)
 			}
 		}
 
@@ -396,7 +417,11 @@ func (s *session) recordCommited(rec *sessionRecord) {
 	}
 
 	for _, r := range rec.compPtrs {
-		s.setCompPtr(r.level, internalKey(r.ikey))
+		s.setCompPtr(r.level, internalKey(r.ikey), false)
+	}
+
+	for _, r := range rec.oCompPtrs {
+		s.setCompPtr(r.level, internalKey(r.ikey), true)
 	}
 }
 

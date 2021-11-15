@@ -387,6 +387,9 @@ type Options struct {
 	//
 	// The default value is false.
 	DisableJournal bool
+
+	// OverflowPrefix defines the key prefix of a space which is picked first in size-compaction.
+	OverflowPrefix []byte
 }
 
 func (o *Options) GetAltFilters() []filter.Filter {
@@ -669,6 +672,13 @@ func (o *Options) GetDisableJournal() bool {
 		return false
 	}
 	return o.DisableJournal
+}
+
+func (o *Options) GetOverflowPrefix() []byte {
+	if o == nil {
+		return nil
+	}
+	return o.OverflowPrefix
 }
 
 // ReadOptions holds the optional parameters for 'read operation'. The

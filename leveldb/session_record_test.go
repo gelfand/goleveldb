@@ -50,7 +50,7 @@ func TestSessionRecord_EncodeDecode(t *testing.T) {
 			makeInternalKey(nil, []byte("foo"), uint64(big+500+1), keyTypeVal),
 			makeInternalKey(nil, []byte("zoo"), uint64(big+600+1), keyTypeDel))
 		v.delTable(4, big+700+i)
-		v.addCompPtr(int(i), makeInternalKey(nil, []byte("x"), uint64(big+900+1), keyTypeVal))
+		v.addCompPtr(int(i), makeInternalKey(nil, []byte("x"), uint64(big+900+1), keyTypeVal), false)
 	}
 
 	v.setComparer("foo")

@@ -7,6 +7,7 @@
 package leveldb
 
 import (
+	"bytes"
 	"sort"
 	"sync/atomic"
 
@@ -56,6 +57,38 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	return flushLevel, nil
 }
 
+func (s *session) pickTablesSorted(tables tFiles, sourceLevel int) (tFiles, bool) {
+	n := len(tables)
+	if oPrefix := s.o.GetOverflowPrefix(); len(oPrefix) > 0 {
+		if ocptr := s.getCompPtr(sourceLevel, true); ocptr != nil {
+			if i := sort.Search(n, func(i int) bool {
+				return s.icmp.Compare(tables[i].imax, ocptr) > 0
+			}); i < n {
+				if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
+					return tFiles{t}, true
+				}
+			}
+		}
+		// from start
+		if i := sort.Search(n, func(i int) bool {
+			return s.icmp.uCompare(tables[i].imin.ukey(), oPrefix) >= 0
+		}); i < n {
+			if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
+				return tFiles{t}, true
+			}
+		}
+	}
+	if cptr := s.getCompPtr(sourceLevel, false); cptr != nil {
+		n := len(tables)
+		if i := sort.Search(n, func(i int) bool {
+			return s.icmp.Compare(tables[i].imax, cptr) > 0
+		}); i < n {
+			return tFiles{tables[i]}, false
+		}
+	}
+	return tFiles{tables[0]}, false
+}
+
 // Pick a compaction based on current state; need external synchronization.
 func (s *session) pickCompaction() *compaction {
 	v := s.version()
@@ -63,17 +96,12 @@ func (s *session) pickCompaction() *compaction {
 	var sourceLevel int
 	var t0 tFiles
 	var typ int
+	var overflowed bool
 	if v.cScore >= 1 {
 		sourceLevel = v.cLevel
-		cptr := s.getCompPtr(sourceLevel)
 		tables := v.levels[sourceLevel]
-		if cptr != nil && sourceLevel > 0 {
-			n := len(tables)
-			if i := sort.Search(n, func(i int) bool {
-				return s.icmp.Compare(tables[i].imax, cptr) > 0
-			}); i < n {
-				t0 = append(t0, tables[i])
-			}
+		if sourceLevel > 0 {
+			t0, overflowed = s.pickTablesSorted(tables, sourceLevel)
 		}
 		if len(t0) == 0 {
 			t0 = append(t0, tables[0])
@@ -95,7 +123,7 @@ func (s *session) pickCompaction() *compaction {
 		}
 	}
 
-	return newCompaction(s, v, sourceLevel, t0, typ)
+	return newCompaction(s, v, sourceLevel, t0, typ, overflowed)
 }
 
 // Create compaction from given level and range; need external synchronization.
@@ -134,10 +162,10 @@ func (s *session) getCompactionRange(sourceLevel int, umin, umax []byte, noLimit
 	if sourceLevel != 0 {
 		typ = nonLevel0Compaction
 	}
-	return newCompaction(s, v, sourceLevel, t0, typ)
+	return newCompaction(s, v, sourceLevel, t0, typ, false)
 }
 
-func newCompaction(s *session, v *version, sourceLevel int, t0 tFiles, typ int) *compaction {
+func newCompaction(s *session, v *version, sourceLevel int, t0 tFiles, typ int, overflowed bool) *compaction {
 	c := &compaction{
 		s:             s,
 		v:             v,
@@ -146,6 +174,7 @@ func newCompaction(s *session, v *version, sourceLevel int, t0 tFiles, typ int) 
 		levels:        [2]tFiles{t0, nil},
 		maxGPOverlaps: int64(s.o.GetCompactionGPOverlaps(sourceLevel)),
 		tPtrs:         make([]int, len(v.levels)),
+		overflowed:    overflowed,
 	}
 	c.expand()
 	c.save()
@@ -174,6 +203,8 @@ type compaction struct {
 	snapSeenKey           bool
 	snapGPOverlappedBytes int64
 	snapTPtrs             []int
+
+	overflowed bool
 }
 
 func (c *compaction) save() {
