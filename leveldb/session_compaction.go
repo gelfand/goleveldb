@@ -8,6 +8,7 @@ package leveldb
 
 import (
 	"bytes"
+	"math"
 	"sort"
 	"sync/atomic"
 
@@ -57,15 +58,27 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	return flushLevel, nil
 }
 
-func (s *session) pickTablesSorted(tables tFiles, sourceLevel int) (tFiles, bool) {
-	n := len(tables)
+func (s *session) pickTable(tables tFiles, cptr internalKey) int {
+	if cptr != nil {
+		n := len(tables)
+		if i := sort.Search(n, func(i int) bool {
+			return s.icmp.Compare(tables[i].imax, cptr) > 0
+		}); i < n {
+			return i
+		}
+	}
+	return 0
+}
+
+func (s *session) pickOverflowedTable(tables tFiles, ocptr internalKey) *tFile {
 	if oPrefix := s.o.GetOverflowPrefix(); len(oPrefix) > 0 {
-		if ocptr := s.getCompPtr(sourceLevel, true); ocptr != nil {
+		n := len(tables)
+		if ocptr != nil {
 			if i := sort.Search(n, func(i int) bool {
 				return s.icmp.Compare(tables[i].imax, ocptr) > 0
 			}); i < n {
 				if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
-					return tFiles{t}, true
+					return t
 				}
 			}
 		}
@@ -74,19 +87,17 @@ func (s *session) pickTablesSorted(tables tFiles, sourceLevel int) (tFiles, bool
 			return s.icmp.uCompare(tables[i].imin.ukey(), oPrefix) >= 0
 		}); i < n {
 			if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
-				return tFiles{t}, true
+				return t
 			}
 		}
 	}
-	if cptr := s.getCompPtr(sourceLevel, false); cptr != nil {
-		n := len(tables)
-		if i := sort.Search(n, func(i int) bool {
-			return s.icmp.Compare(tables[i].imax, cptr) > 0
-		}); i < n {
-			return tFiles{tables[i]}, false
-		}
-	}
-	return tFiles{tables[0]}, false
+	return nil
+}
+
+func (s *session) getMeanOverlapWithNextLevel(level int) float64 {
+	nt0 := float64(s.o.GetCompactionTotalSize(level)) / float64(s.o.GetCompactionTableSize(level))
+	nt1 := float64(s.o.GetCompactionTotalSize(level+1)) / float64(s.o.GetCompactionTableSize(level+1))
+	return nt1 / nt0
 }
 
 // Pick a compaction based on current state; need external synchronization.
@@ -101,7 +112,31 @@ func (s *session) pickCompaction() *compaction {
 		sourceLevel = v.cLevel
 		tables := v.levels[sourceLevel]
 		if sourceLevel > 0 {
-			t0, overflowed = s.pickTablesSorted(tables, sourceLevel)
+			if picked := s.pickOverflowedTable(tables, s.getCompPtr(sourceLevel, true)); picked != nil {
+				overflowed = true
+				t0 = tFiles{picked}
+			} else {
+				p := s.pickTable(tables, s.getCompPtr(sourceLevel, false))
+				if nextLevel := sourceLevel + 1; nextLevel < len(v.levels) {
+					t1 := v.levels[nextLevel]
+					preferredOverlap := int(math.Round(s.getMeanOverlapWithNextLevel(sourceLevel) / 2))
+					minOverlap := math.MaxInt
+					for i, n := 0, len(tables); i < n; i++ {
+						t := tables[(p+i)%n]
+						nOverlap := len(t1.getOverlaps(nil, s.icmp, t.imin.ukey(), t.imax.ukey(), false))
+						if nOverlap <= preferredOverlap {
+							t0 = tFiles{t}
+							break
+						}
+						if nOverlap < minOverlap {
+							minOverlap = nOverlap
+							t0 = tFiles{t}
+						}
+					}
+				} else {
+					t0 = tFiles{tables[p]}
+				}
+			}
 		}
 		if len(t0) == 0 {
 			t0 = append(t0, tables[0])
