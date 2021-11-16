@@ -120,7 +120,7 @@ func (s *session) pickCompaction() *compaction {
 				if nextLevel := sourceLevel + 1; nextLevel < len(v.levels) {
 					t1 := v.levels[nextLevel]
 					preferredOverlap := int(math.Round(s.getMeanOverlapWithNextLevel(sourceLevel) / 2))
-					minOverlap := math.MaxInt
+					minOverlap := -1
 					for i, n := 0, len(tables); i < n; i++ {
 						t := tables[(p+i)%n]
 						nOverlap := len(t1.getOverlaps(nil, s.icmp, t.imin.ukey(), t.imax.ukey(), false))
@@ -128,7 +128,7 @@ func (s *session) pickCompaction() *compaction {
 							t0 = tFiles{t}
 							break
 						}
-						if nOverlap < minOverlap {
+						if minOverlap < 0 || nOverlap < minOverlap {
 							minOverlap = nOverlap
 							t0 = tFiles{t}
 						}
