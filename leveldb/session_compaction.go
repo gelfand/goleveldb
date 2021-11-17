@@ -57,15 +57,27 @@ func (s *session) flushMemdb(rec *sessionRecord, mdb *memdb.DB, maxLevel int) (i
 	return flushLevel, nil
 }
 
-func (s *session) pickTablesSorted(tables tFiles, sourceLevel int) (tFiles, bool) {
-	n := len(tables)
+func (s *session) pickTable(tables tFiles, cptr internalKey) int {
+	if cptr != nil {
+		n := len(tables)
+		if i := sort.Search(n, func(i int) bool {
+			return s.icmp.Compare(tables[i].imax, cptr) > 0
+		}); i < n {
+			return i
+		}
+	}
+	return 0
+}
+
+func (s *session) pickOverflowedTable(tables tFiles, ocptr internalKey) *tFile {
 	if oPrefix := s.o.GetOverflowPrefix(); len(oPrefix) > 0 {
-		if ocptr := s.getCompPtr(sourceLevel, true); ocptr != nil {
+		n := len(tables)
+		if ocptr != nil {
 			if i := sort.Search(n, func(i int) bool {
 				return s.icmp.Compare(tables[i].imax, ocptr) > 0
 			}); i < n {
 				if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
-					return tFiles{t}, true
+					return t
 				}
 			}
 		}
@@ -74,19 +86,11 @@ func (s *session) pickTablesSorted(tables tFiles, sourceLevel int) (tFiles, bool
 			return s.icmp.uCompare(tables[i].imin.ukey(), oPrefix) >= 0
 		}); i < n {
 			if t := tables[i]; bytes.HasPrefix(t.imin.ukey(), oPrefix) {
-				return tFiles{t}, true
+				return t
 			}
 		}
 	}
-	if cptr := s.getCompPtr(sourceLevel, false); cptr != nil {
-		n := len(tables)
-		if i := sort.Search(n, func(i int) bool {
-			return s.icmp.Compare(tables[i].imax, cptr) > 0
-		}); i < n {
-			return tFiles{tables[i]}, false
-		}
-	}
-	return tFiles{tables[0]}, false
+	return nil
 }
 
 // Pick a compaction based on current state; need external synchronization.
@@ -101,7 +105,32 @@ func (s *session) pickCompaction() *compaction {
 		sourceLevel = v.cLevel
 		tables := v.levels[sourceLevel]
 		if sourceLevel > 0 {
-			t0, overflowed = s.pickTablesSorted(tables, sourceLevel)
+			if o := s.pickOverflowedTable(tables, s.getCompPtr(sourceLevel, true)); o != nil {
+				overflowed = true
+				t0 = tFiles{o}
+			} else {
+				p := s.pickTable(tables, s.getCompPtr(sourceLevel, false))
+				t0 = tFiles{tables[p]}
+				if nextLevel := sourceLevel + 1; nextLevel < len(v.levels) {
+					if next := v.levels[nextLevel]; len(next) > 0 {
+						targetOverlap := float64(len(next)) / float64(len(tables)) * 0.6
+						minOverlap := len(next)
+						for i, n := 0, len(tables); i < n; i++ {
+							t := tables[(p+i)%n]
+							nOverlap := len(next.getOverlaps(nil, s.icmp, t.imin.ukey(), t.imax.ukey(), false))
+							if float64(nOverlap) <= targetOverlap {
+								t0[0] = t
+								break
+							}
+
+							if nOverlap <= minOverlap {
+								minOverlap = nOverlap
+								t0[0] = t
+							}
+						}
+					}
+				}
+			}
 		}
 		if len(t0) == 0 {
 			t0 = append(t0, tables[0])
