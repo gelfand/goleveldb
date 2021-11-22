@@ -113,7 +113,7 @@ func (s *session) pickCompaction() *compaction {
 				t0 = tFiles{tables[p]}
 				if nextLevel := sourceLevel + 1; nextLevel < len(v.levels) {
 					if next := v.levels[nextLevel]; len(next) > 0 {
-						targetOverlap := len(next) / len(tables)
+						targetOverlap := s.o.GetCompactionTableCount(sourceLevel+1) / s.o.GetCompactionTableCount(sourceLevel)
 						for i, n := 0, len(tables); i < n; i++ {
 							t := tables[(p+i)%n]
 							nOverlap := len(next.getOverlaps(nil, s.icmp, t.imin.ukey(), t.imax.ukey(), false))

@@ -7,6 +7,8 @@
 package leveldb
 
 import (
+	"math"
+
 	"github.com/syndtr/goleveldb/leveldb/filter"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 )
@@ -104,4 +106,10 @@ func (co *cachedOptions) GetCompactionTotalSize(level int) int64 {
 		return co.compactionTotalSize[level]
 	}
 	return co.Options.GetCompactionTotalSize(level)
+}
+
+func (co *cachedOptions) GetCompactionTableCount(level int) int {
+	totalSize := co.GetCompactionTotalSize(level)
+	tableSize := co.GetCompactionTableSize(level)
+	return int(math.Round(float64(totalSize) / float64(tableSize)))
 }
